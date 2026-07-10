@@ -27,6 +27,12 @@ import {
   piListSessions,
   piSearch,
 } from "./adapters/pi.js";
+import {
+  collectKiroTurnsAndEvents,
+  kiroExtractDialogue,
+  kiroListSessions,
+  kiroSearch,
+} from "./adapters/kiro.js";
 import { buildBrainstormWindows } from "./phase.js";
 import { relevanceScore, searchInDialogue } from "./search.js";
 import type {
@@ -83,22 +89,29 @@ export function listAll(f: MemFilter): MemSessionInfo[] {
     all.push(...opencodeListSessions(f));
   if (f.platform === "all" || f.platform === "pi")
     all.push(...piListSessions(f));
+  if (f.platform === "all" || f.platform === "kiro")
+    all.push(...kiroListSessions(f));
   all.sort((a, b) =>
     (b.updated ?? b.created ?? "").localeCompare(a.updated ?? a.created ?? ""),
   );
   return all.slice(0, f.limit);
 }
 
-function extractDialogue(s: MemSessionInfo): DialogueTurn[] {
+function extractDialogue(
+  s: MemSessionInfo,
+  opts?: { full?: boolean },
+): DialogueTurn[] {
   switch (s.platform) {
     case "claude":
-      return claudeExtractDialogue(s);
+      return claudeExtractDialogue(s, opts);
     case "codex":
-      return codexExtractDialogue(s);
+      return codexExtractDialogue(s, opts);
     case "opencode":
       return opencodeExtractDialogue(s);
     case "pi":
-      return piExtractDialogue(s);
+      return piExtractDialogue(s, opts);
+    case "kiro":
+      return kiroExtractDialogue(s, opts);
   }
 }
 
@@ -112,6 +125,8 @@ function searchSession(s: MemSessionInfo, kw: string): SearchHit {
       return opencodeSearch(kw);
     case "pi":
       return piSearch(s, kw);
+    case "kiro":
+      return kiroSearch(s, kw);
   }
 }
 
@@ -128,6 +143,8 @@ function collectTurnsAndEvents(s: MemSessionInfo): {
       return { turns: opencodeExtractDialogue(s), events: [] };
     case "pi":
       return collectPiTurnsAndEvents(s);
+    case "kiro":
+      return collectKiroTurnsAndEvents(s);
   }
 }
 
@@ -189,7 +206,11 @@ interface PhaseSlice {
 
 /** Slice cleaned dialogue by phase. Claude / Codex / Pi have native boundary
  * detection; OpenCode degrades to "all turns + warning". */
-function sliceMemPhase(s: MemSessionInfo, phase: MemPhase): PhaseSlice {
+function sliceMemPhase(
+  s: MemSessionInfo,
+  phase: MemPhase,
+  full: boolean,
+): PhaseSlice {
   const warnings: MemWarning[] = [];
 
   if (phase === "all" || s.platform === "opencode") {
@@ -201,7 +222,7 @@ function sliceMemPhase(s: MemSessionInfo, phase: MemPhase): PhaseSlice {
           `returning full dialogue.`,
       });
     }
-    const turns = extractDialogue(s);
+    const turns = extractDialogue(s, { full });
     return {
       groups: [{ label: null, turns }],
       windows: [],
@@ -334,7 +355,7 @@ export function extractMemDialogue(
   const s = findSessionById(options.sessionId, f);
   if (!s) throw new MemSessionNotFoundError(options.sessionId);
 
-  const slice = sliceMemPhase(s, phase);
+  const slice = sliceMemPhase(s, phase, options.full === true);
   const grepLc =
     typeof options.grep === "string" ? options.grep.toLowerCase() : undefined;
   const filterTurns = (turns: DialogueTurn[]): DialogueTurn[] =>

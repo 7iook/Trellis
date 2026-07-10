@@ -31,22 +31,24 @@ function checkForUpdates(cwd: string): void {
   const cliVersion = VERSION;
   const comparison = compareVersions(cliVersion, projectVersion);
 
+  // Notices go to stderr so they never pollute stdout (e.g. `mem ... --json`,
+  // which is consumed by downstream tooling).
   if (comparison > 0) {
     // CLI is newer than project - update available
-    console.log(
+    console.error(
       chalk.yellow(
         `\n⚠️  Trellis update available: ${projectVersion} → ${cliVersion}`,
       ),
     );
-    console.log(chalk.gray(`   Run: trellis update\n`));
+    console.error(chalk.gray(`   Run: trellis update\n`));
   } else if (comparison < 0) {
     // CLI is older than project - CLI needs updating
-    console.log(
+    console.error(
       chalk.yellow(
         `\n⚠️  Your CLI (${cliVersion}) is older than project (${projectVersion})`,
       ),
     );
-    console.log(chalk.gray(`   Run: trellis upgrade\n`));
+    console.error(chalk.gray(`   Run: trellis upgrade\n`));
   }
 }
 

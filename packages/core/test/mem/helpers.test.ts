@@ -265,6 +265,31 @@ describe("stripInjectionTags", () => {
     const out = stripInjectionTags("a\n\n\n\nb");
     expect(out).toBe("a\n\nb");
   });
+
+  it("strips sub-agent task-notification blocks (with nested usage)", () => {
+    const raw =
+      "real answer here\n" +
+      "<task-notification>\n<task-id>abc</task-id>\n<summary>did stuff</summary>\n" +
+      "<result>done</result>\n<usage><subagent_tokens>1234</subagent_tokens>" +
+      "<tool_uses>7</tool_uses></usage>\n</task-notification>\ntail text";
+    const out = stripInjectionTags(raw);
+    expect(out).toContain("real answer here");
+    expect(out).toContain("tail text");
+    expect(out).not.toContain("task-id");
+    expect(out).not.toContain("subagent_tokens");
+    expect(out).not.toContain("tool_uses");
+  });
+
+  it("strips local-command-caveat and standalone usage blocks", () => {
+    const raw =
+      "<local-command-caveat>ignore me</local-command-caveat>keep this" +
+      "<usage><duration_ms>999</duration_ms></usage> and this";
+    const out = stripInjectionTags(raw);
+    expect(out).toContain("keep this");
+    expect(out).toContain("and this");
+    expect(out).not.toContain("caveat");
+    expect(out).not.toContain("duration_ms");
+  });
 });
 
 // =============================================================================

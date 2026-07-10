@@ -47,6 +47,9 @@ interface ClaudeEvent {
   timestamp?: string;
   message?: ClaudeMessage;
   isCompactSummary?: boolean;
+  /** `{ type: "ai-title", aiTitle: "..." }` — Claude Code's generated title,
+   * present in the JSONL when no sibling `sessions-index.json` exists. */
+  aiTitle?: string;
 }
 
 interface ClaudeIndexEntry {
@@ -101,7 +104,7 @@ export function claudeListSessions(f: MemFilter): MemSessionInfo[] {
       const idx = indexById.get(id);
       let cwd: string | undefined = idx?.cwd;
       let created: string | undefined = idx?.created;
-      const title: string | undefined = idx?.title;
+      let title: string | undefined = idx?.title;
 
       if (!cwd || !created) {
         const evt = findInJsonl<ClaudeEvent>(
@@ -114,6 +117,17 @@ export function claudeListSessions(f: MemFilter): MemSessionInfo[] {
           created ??
           evt?.timestamp ??
           readJsonlFirst<ClaudeEvent>(filePath)?.timestamp;
+      }
+
+      // No sibling index → recover the generated title from the `ai-title`
+      // event that Claude Code writes near the top of the JSONL.
+      if (!title) {
+        const titleEvt = findInJsonl<ClaudeEvent>(
+          filePath,
+          (o) => o.type === "ai-title" && typeof o.aiTitle === "string",
+          100,
+        );
+        title = titleEvt?.aiTitle;
       }
 
       const stat = fs.statSync(filePath);
@@ -139,12 +153,17 @@ export function claudeListSessions(f: MemFilter): MemSessionInfo[] {
 
 // ---------- extract ----------
 
-export function claudeExtractDialogue(s: MemSessionInfo): DialogueTurn[] {
+export function claudeExtractDialogue(
+  s: MemSessionInfo,
+  opts?: { full?: boolean },
+): DialogueTurn[] {
   // - user: type=="user" + role=="user" + content is a string
   // - assistant: type=="assistant" + role=="assistant", keep only `text` blocks
   // - thinking / tool_use blocks dropped entirely; injection tags stripped
   // - compaction: an `isCompactSummary` user event resets prior turns and
-  //   replaces them with a single synthetic [compact summary] turn
+  //   replaces them with a single synthetic [compact summary] turn (unless
+  //   `full`: append the summary as a marker and keep all prior history)
+  const full = opts?.full === true;
   let turns: DialogueTurn[] = [];
   readJsonl<ClaudeEvent>(s.filePath, (obj) => {
     const t = obj.type;
@@ -165,9 +184,14 @@ export function claudeExtractDialogue(s: MemSessionInfo): DialogueTurn[] {
         }
         summary = parts.join("\n\n");
       }
-      turns = summary
-        ? [{ role: "user", text: `[compact summary]\n${summary}` }]
-        : [];
+      if (full) {
+        if (summary)
+          turns.push({ role: "user", text: `[compact summary]\n${summary}` });
+      } else {
+        turns = summary
+          ? [{ role: "user", text: `[compact summary]\n${summary}` }]
+          : [];
+      }
       return;
     }
     if (t === "user" && msg.role === "user") {

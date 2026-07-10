@@ -123,14 +123,15 @@ export function readMemContext(
   const around = options.around ?? 1;
   const maxChars = options.maxChars ?? 6000;
 
-  let turns: DialogueTurn[] = extractDialogue(s);
+  const full = options.full === true;
+  let turns: DialogueTurn[] = extractDialogue(s, { full });
   let mergedChildren = 0;
   if (options.includeChildren === true) {
     const all = listAll({ ...f, cwd: undefined, limit: WIDE_LIMIT });
     const childIndex = buildChildIndex(all);
     const kids = childIndex.get(s.id) ?? [];
     mergedChildren = kids.length;
-    for (const c of kids) turns = [...turns, ...extractDialogue(c)];
+    for (const c of kids) turns = [...turns, ...extractDialogue(c, { full })];
   }
 
   const selected = selectContextTurns(turns, grep, nTurns, around, maxChars);

@@ -25,6 +25,18 @@ const INJECTION_TAGS: readonly string[] = [
   "environment_context",
   "auto_compact_summary",
   "user_instructions",
+  // Sub-agent / tool-call harness noise observed in real Claude Code + Kiro
+  // sessions. `task-notification` / `usage` wrap nested blocks (task-id,
+  // summary, subagent_tokens, tool_uses, …) that get removed with the outer
+  // tag. `antml:invoke` / `invoke` are residual tool-call envelopes.
+  "task-notification",
+  "usage",
+  "local-command-caveat",
+  "tool_use",
+  "turn_aborted",
+  "codex_internal_context",
+  "antml:invoke",
+  "invoke",
 ];
 
 /** True if this turn is a platform bootstrap injection (AGENTS.md preamble,

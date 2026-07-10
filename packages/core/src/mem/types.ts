@@ -7,7 +7,7 @@
  * reads channel events.
  */
 
-export type MemSourceKind = "claude" | "codex" | "opencode" | "pi";
+export type MemSourceKind = "claude" | "codex" | "opencode" | "pi" | "kiro";
 export type MemSourceFilter = MemSourceKind | "all";
 export type MemPhase = "brainstorm" | "implement" | "all";
 export type DialogueRole = "user" | "assistant";
@@ -178,6 +178,9 @@ export interface ReadMemContextOptions {
   /** Total character budget (default 6000). */
   maxChars?: number;
   includeChildren?: boolean;
+  /** Preserve pre-compaction history instead of collapsing to the last
+   * compaction state. Default false. */
+  full?: boolean;
 }
 
 export interface ExtractMemDialogueOptions {
@@ -187,6 +190,9 @@ export interface ExtractMemDialogueOptions {
   phase?: MemPhase;
   /** Multi-token AND substring filter applied after phase slicing. */
   grep?: string;
+  /** Preserve pre-compaction history instead of collapsing to the last
+   * compaction state. Default false. */
+  full?: boolean;
 }
 
 export interface ListMemProjectsOptions {

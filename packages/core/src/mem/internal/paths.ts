@@ -13,6 +13,10 @@ import * as path from "node:path";
 export const HOME = os.homedir();
 export const CLAUDE_PROJECTS = path.join(HOME, ".claude", "projects");
 export const CODEX_SESSIONS = path.join(HOME, ".codex", "sessions");
+/** Kiro session store root. Two layouts live side by side underneath:
+ *  - GUI: `<workspace-hash>/sess_<id>/messages.jsonl` + `session.json`
+ *  - CLI: `cli/<id>.jsonl` + `cli/<id>.json` */
+export const KIRO_SESSIONS = path.join(HOME, ".kiro", "sessions");
 
 function expandHome(p: string): string {
   if (p === "~") return HOME;

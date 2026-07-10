@@ -47,6 +47,8 @@ const { opencodeListSessions, opencodeExtractDialogue, opencodeSearch } =
   await import("../../src/mem/adapters/opencode.js");
 const { piListSessions, piExtractDialogue, piSearch } =
   await import("../../src/mem/adapters/pi.js");
+const { kiroListSessions, kiroExtractDialogue, kiroSearch } =
+  await import("../../src/mem/adapters/kiro.js");
 
 import type { MemFilter } from "../../src/mem/types.js";
 
@@ -185,6 +187,22 @@ describe("claudeListSessions / claudeExtractDialogue", () => {
     );
     expect(found?.title).toBe("fixed bug in foo");
     expect(found?.cwd).toBe(projectCwd);
+  });
+
+  it("recovers title from the ai-title event when no sessions-index exists", () => {
+    writeJsonl(sessionFile, [
+      {
+        type: "user",
+        cwd: projectCwd,
+        timestamp: "2026-04-15T10:00:00Z",
+        message: { role: "user", content: "hi" },
+      },
+      { type: "ai-title", aiTitle: "研究 spexcode 项目", sessionId },
+    ]);
+    const found = claudeListSessions(mkFilter()).find(
+      (s) => s.id === sessionId,
+    );
+    expect(found?.title).toBe("研究 spexcode 项目");
   });
 
   it("filters by --since (excludes sessions whose entire lifetime predates the window)", () => {
@@ -614,6 +632,62 @@ describe("codexListSessions / codexExtractDialogue", () => {
     ]);
   });
 
+  it("extractDialogue with {full:true} keeps pre-compaction turns and ignores replacement_history", () => {
+    writeJsonl(sessionFile, [
+      {
+        timestamp: "2026-04-15T10:00:00Z",
+        payload: { id: sessionId, cwd: projectCwd },
+      },
+      {
+        timestamp: "2026-04-15T10:00:01Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "pre-compact turn" }],
+        },
+      },
+      {
+        timestamp: "2026-04-15T10:00:02Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "pre-compact answer" }],
+        },
+      },
+      {
+        timestamp: "2026-04-15T10:00:03Z",
+        type: "compacted",
+        payload: {
+          replacement_history: [
+            {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "summary of earlier" }],
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-04-15T10:00:04Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "post-compact turn" }],
+        },
+      },
+    ]);
+    const s = codexListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    // full mode: pre-compaction turns survive, compaction event is skipped,
+    // and the replacement_history summary is NOT injected.
+    expect(codexExtractDialogue(s, { full: true }).map((t) => t.text)).toEqual([
+      "pre-compact turn",
+      "pre-compact answer",
+      "post-compact turn",
+    ]);
+  });
+
   it("extractDialogue drops bootstrap (large INSTRUCTIONS) user turn", () => {
     const huge = "<INSTRUCTIONS>\n" + "x".repeat(5000) + "\n</INSTRUCTIONS>";
     writeJsonl(sessionFile, [
@@ -980,5 +1054,386 @@ describe("opencode adapter (degraded no-op)", () => {
     const hit = opencodeSearch("anything");
     expect(hit.count).toBe(0);
     expect(hit.totalTurns).toBe(0);
+  });
+});
+
+// =============================================================================
+// Kiro adapter — two on-disk formats:
+//   GUI: ~/.kiro/sessions/<hash>/sess_<id>/messages.jsonl + session.json
+//   CLI: ~/.kiro/sessions/cli/<id>.jsonl               + <id>.json
+// =============================================================================
+
+const KIRO_SESSIONS = nodePath.join(fakeHome, ".kiro", "sessions");
+
+describe("Kiro adapter — GUI format", () => {
+  const projectCwd = nodePath.resolve("/repo/kiro-gui");
+  const hash = "opaquehash01";
+  const sessionId = "b0303f95-cbd1-41a1-b895-5714dbf4a209";
+  const sessDir = nodePath.join(
+    KIRO_SESSIONS,
+    hash,
+    `sess_${sessionId}`,
+  );
+  const messagesFile = nodePath.join(sessDir, "messages.jsonl");
+  const sessionJson = nodePath.join(sessDir, "session.json");
+
+  beforeEach(() => {
+    rimraf(KIRO_SESSIONS);
+  });
+  afterEach(() => {
+    rimraf(KIRO_SESSIONS);
+  });
+
+  it("lists a GUI session with title/cwd/created from session.json", () => {
+    writeJson(sessionJson, {
+      id: `sess_${sessionId}`,
+      title: "规范化工作流",
+      workspacePaths: [projectCwd],
+      createdAt: "2026-07-09T00:19:32.148Z",
+      lastModifiedAt: "2026-07-09T23:41:48.275Z",
+    });
+    writeJsonl(messagesFile, [
+      {
+        id: "u1",
+        payload: { type: "user", content: "hello kiro" },
+      },
+    ]);
+
+    const list = kiroListSessions(mkFilter());
+    const s = list.find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    expect(s.platform).toBe("kiro");
+    expect(s.title).toBe("规范化工作流");
+    expect(nodePath.resolve(s.cwd ?? "")).toBe(projectCwd);
+    expect(s.created).toBe("2026-07-09T00:19:32.148Z");
+  });
+
+  it("extractDialogue keeps user + Say-assistant text, drops Reasoning/tool noise + signature", () => {
+    writeJson(sessionJson, {
+      workspacePaths: [projectCwd],
+      createdAt: "2026-07-09T00:19:32.148Z",
+    });
+    writeJsonl(messagesFile, [
+      { id: "u1", payload: { type: "user", content: "real question here" } },
+      {
+        id: "r1",
+        payload: {
+          type: "assistant",
+          operationType: "Reasoning",
+          content: "internal chain of thought",
+          reasoningSignature: "ErQFCmMIDxABGAIqQNBID" + "A".repeat(500),
+        },
+      },
+      {
+        id: "s1",
+        payload: {
+          type: "assistant",
+          operationType: "Say",
+          content: "real answer",
+        },
+      },
+      {
+        id: "tc1",
+        payload: { type: "tool_call", toolName: "fsRead", args: {} },
+      },
+      {
+        id: "tr1",
+        payload: { type: "tool_result", content: "file bytes", success: true },
+      },
+    ]);
+
+    const s = kiroListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    const turns = kiroExtractDialogue(s);
+    expect(turns).toEqual([
+      { role: "user", text: "real question here" },
+      { role: "assistant", text: "real answer" },
+    ]);
+    // signature base64 must never leak into any turn
+    expect(turns.some((t) => t.text.includes("ErQFCmMIDx"))).toBe(false);
+  });
+
+  it("strips injection tags from GUI user turns", () => {
+    writeJson(sessionJson, {
+      workspacePaths: [projectCwd],
+      createdAt: "2026-07-09T00:19:32.148Z",
+    });
+    writeJsonl(messagesFile, [
+      {
+        id: "u1",
+        payload: {
+          type: "user",
+          content: "keep this<system-reminder>drop me</system-reminder> too",
+        },
+      },
+    ]);
+    const s = kiroListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    expect(kiroExtractDialogue(s)).toEqual([
+      { role: "user", text: "keep this too" },
+    ]);
+  });
+
+  it("scopes GUI sessions by --cwd", () => {
+    writeJson(sessionJson, {
+      workspacePaths: [projectCwd],
+      createdAt: "2026-07-09T00:19:32.148Z",
+    });
+    writeJsonl(messagesFile, [
+      { id: "u1", payload: { type: "user", content: "scoped" } },
+    ]);
+    expect(
+      kiroListSessions(mkFilter({ cwd: projectCwd })).map((s) => s.id),
+    ).toContain(sessionId);
+    expect(
+      kiroListSessions(
+        mkFilter({ cwd: nodePath.resolve("/repo/other") }),
+      ).map((s) => s.id),
+    ).not.toContain(sessionId);
+  });
+});
+
+describe("Kiro adapter — CLI format", () => {
+  const projectCwd = nodePath.resolve("/repo/kiro-cli");
+  const sessionId = "f9bc1c29-8bf3-4d5c-b798-2a7b24bf9dbd";
+  const jsonlFile = nodePath.join(KIRO_SESSIONS, "cli", `${sessionId}.jsonl`);
+  const metaFile = nodePath.join(KIRO_SESSIONS, "cli", `${sessionId}.json`);
+
+  beforeEach(() => {
+    rimraf(KIRO_SESSIONS);
+  });
+  afterEach(() => {
+    rimraf(KIRO_SESSIONS);
+  });
+
+  it("lists a CLI session with title/cwd/created from <id>.json", () => {
+    writeJson(metaFile, {
+      session_id: sessionId,
+      cwd: projectCwd,
+      created_at: "2026-07-06T11:44:37.412Z",
+      updated_at: "2026-07-07T16:29:37.416Z",
+      title: "为何未触发 好评返现",
+    });
+    writeJsonl(jsonlFile, [
+      {
+        kind: "Prompt",
+        version: 1,
+        data: {
+          message_id: "p1",
+          content: [{ kind: "text", data: "first prompt" }],
+        },
+      },
+    ]);
+
+    const s = kiroListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    expect(s.platform).toBe("kiro");
+    expect(s.title).toBe("为何未触发 好评返现");
+    expect(nodePath.resolve(s.cwd ?? "")).toBe(projectCwd);
+    expect(s.created).toBe("2026-07-06T11:44:37.412Z");
+  });
+
+  it("extractDialogue parses Prompt + AssistantMessage(text), drops thinking + ToolResults", () => {
+    writeJson(metaFile, {
+      session_id: sessionId,
+      cwd: projectCwd,
+      created_at: "2026-07-06T11:44:37.412Z",
+    });
+    writeJsonl(jsonlFile, [
+      {
+        kind: "Prompt",
+        version: 1,
+        data: {
+          message_id: "p1",
+          content: [{ kind: "text", data: "why did it fail" }],
+        },
+      },
+      {
+        kind: "AssistantMessage",
+        version: 1,
+        data: {
+          message_id: "a1",
+          content: [
+            {
+              kind: "thinking",
+              data: {
+                text: "internal reasoning",
+                signature: "EuQICmUIDxAB" + "B".repeat(400),
+              },
+            },
+            { kind: "text", data: "here is the answer" },
+          ],
+        },
+      },
+      {
+        kind: "ToolResults",
+        version: 1,
+        data: {
+          message_id: "t1",
+          content: [{ kind: "toolResult", data: {} }],
+          results: [],
+        },
+      },
+    ]);
+
+    const s = kiroListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    const turns = kiroExtractDialogue(s);
+    expect(turns).toEqual([
+      { role: "user", text: "why did it fail" },
+      { role: "assistant", text: "here is the answer" },
+    ]);
+    expect(turns.some((t) => t.text.includes("EuQICmUIDx"))).toBe(false);
+  });
+
+  it("collapses a CLI Compaction into a single [compact summary] turn", () => {
+    writeJson(metaFile, {
+      session_id: sessionId,
+      cwd: projectCwd,
+      created_at: "2026-07-06T11:44:37.412Z",
+    });
+    writeJsonl(jsonlFile, [
+      {
+        kind: "Prompt",
+        version: 1,
+        data: {
+          message_id: "p1",
+          content: [{ kind: "text", data: "pre-compact prompt" }],
+        },
+      },
+      {
+        kind: "Compaction",
+        version: 1,
+        data: {
+          message_id: "c1",
+          strategy: "auto",
+          summary: "the condensed history",
+          messages_snapshot: [],
+        },
+      },
+      {
+        kind: "Prompt",
+        version: 1,
+        data: {
+          message_id: "p2",
+          content: [{ kind: "text", data: "post-compact prompt" }],
+        },
+      },
+    ]);
+
+    const s = kiroListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    expect(kiroExtractDialogue(s).map((t) => t.text)).toEqual([
+      "[compact summary]\nthe condensed history",
+      "post-compact prompt",
+    ]);
+  });
+
+  it("extractDialogue with {full:true} keeps pre-compaction turns around the summary marker", () => {
+    writeJson(metaFile, {
+      session_id: sessionId,
+      cwd: projectCwd,
+      created_at: "2026-07-06T11:44:37.412Z",
+    });
+    writeJsonl(jsonlFile, [
+      {
+        kind: "Prompt",
+        version: 1,
+        data: {
+          message_id: "p1",
+          content: [{ kind: "text", data: "pre-compact prompt" }],
+        },
+      },
+      {
+        kind: "AssistantMessage",
+        version: 1,
+        data: {
+          message_id: "a1",
+          content: [{ kind: "text", data: "pre-compact answer" }],
+        },
+      },
+      {
+        kind: "Compaction",
+        version: 1,
+        data: { message_id: "c1", summary: "the condensed history" },
+      },
+      {
+        kind: "Prompt",
+        version: 1,
+        data: {
+          message_id: "p2",
+          content: [{ kind: "text", data: "post-compact prompt" }],
+        },
+      },
+    ]);
+    const s = kiroListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    expect(kiroExtractDialogue(s, { full: true }).map((t) => t.text)).toEqual([
+      "pre-compact prompt",
+      "pre-compact answer",
+      "[compact summary]\nthe condensed history",
+      "post-compact prompt",
+    ]);
+  });
+
+  it("kiroSearch counts keyword hits in cleaned dialogue", () => {
+    writeJson(metaFile, {
+      session_id: sessionId,
+      cwd: projectCwd,
+      created_at: "2026-07-06T11:44:37.412Z",
+    });
+    writeJsonl(jsonlFile, [
+      {
+        kind: "Prompt",
+        version: 1,
+        data: {
+          message_id: "p1",
+          content: [{ kind: "text", data: "cashback cashback" }],
+        },
+      },
+    ]);
+    const s = kiroListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    expect(kiroSearch(s, "cashback").count).toBe(2);
+    expect(kiroSearch(s, "nomatch").count).toBe(0);
+  });
+});
+
+describe("Kiro adapter — empty / robustness", () => {
+  afterEach(() => rimraf(KIRO_SESSIONS));
+
+  it("returns [] when the Kiro root does not exist", () => {
+    rimraf(KIRO_SESSIONS);
+    expect(kiroListSessions(mkFilter())).toEqual([]);
+  });
+
+  it("skips corrupt JSONL lines without throwing", () => {
+    const sessionId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const jsonlFile = nodePath.join(KIRO_SESSIONS, "cli", `${sessionId}.jsonl`);
+    const metaFile = nodePath.join(KIRO_SESSIONS, "cli", `${sessionId}.json`);
+    writeJson(metaFile, {
+      session_id: sessionId,
+      cwd: nodePath.resolve("/repo/x"),
+      created_at: "2026-07-06T11:44:37.412Z",
+    });
+    nodeFs.mkdirSync(nodePath.dirname(jsonlFile), { recursive: true });
+    nodeFs.writeFileSync(
+      jsonlFile,
+      '{ broken json\n{"kind":"Prompt","version":1,"data":{"message_id":"p1","content":[{"kind":"text","data":"survived"}]}}\n',
+    );
+    const s = kiroListSessions(mkFilter()).find((x) => x.id === sessionId);
+    expect(s).toBeDefined();
+    if (!s) return;
+    expect(kiroExtractDialogue(s)).toEqual([
+      { role: "user", text: "survived" },
+    ]);
   });
 });

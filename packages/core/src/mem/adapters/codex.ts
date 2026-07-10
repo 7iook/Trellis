@@ -164,14 +164,21 @@ function buildTurnFromMessage(
   return { role, text: merged };
 }
 
-export function codexExtractDialogue(s: MemSessionInfo): DialogueTurn[] {
+export function codexExtractDialogue(
+  s: MemSessionInfo,
+  opts?: { full?: boolean },
+): DialogueTurn[] {
   // payload.type=="message" with role in {user, assistant} only.
   // Compaction: a top-level `compacted` event carries payload.replacement_history
-  // — the new authoritative history replacing everything before.
+  // — the new authoritative history replacing everything before. With `full`,
+  // compaction events are ignored so all pre-compaction turns survive (long
+  // sessions compact many times, discarding most assistant work otherwise).
+  const full = opts?.full === true;
   let turns: DialogueTurn[] = [];
 
   readJsonl<CodexEvent>(s.filePath, (obj) => {
     if (obj.type === "compacted") {
+      if (full) return;
       const rh = obj.payload?.replacement_history;
       turns = [];
       if (!Array.isArray(rh)) return;

@@ -175,8 +175,11 @@ function timestampMs(value: unknown): number | undefined {
 
 // ---------- extract/search/phase ----------
 
-export function piExtractDialogue(s: MemSessionInfo): DialogueTurn[] {
-  return buildPiTurnsAndEvents(s).turns;
+export function piExtractDialogue(
+  s: MemSessionInfo,
+  opts?: { full?: boolean },
+): DialogueTurn[] {
+  return buildPiTurnsAndEvents(s, opts?.full === true).turns;
 }
 
 export function piSearch(s: MemSessionInfo, kw: string): SearchHit {
@@ -184,11 +187,11 @@ export function piSearch(s: MemSessionInfo, kw: string): SearchHit {
 }
 
 export function collectPiTurnsAndEvents(s: MemSessionInfo): PiBuilt {
-  return buildPiTurnsAndEvents(s);
+  return buildPiTurnsAndEvents(s, false);
 }
 
-function buildPiTurnsAndEvents(s: MemSessionInfo): PiBuilt {
-  const effective = effectiveActivePath(s.filePath);
+function buildPiTurnsAndEvents(s: MemSessionInfo, full: boolean): PiBuilt {
+  const effective = effectiveActivePath(s.filePath, full);
   const turns: DialogueTurn[] = [];
   const events: TaskPyEvent[] = [];
 
@@ -201,7 +204,7 @@ function buildPiTurnsAndEvents(s: MemSessionInfo): PiBuilt {
   return { turns, events };
 }
 
-function effectiveActivePath(filePath: string): PiEntry[] {
+function effectiveActivePath(filePath: string, full: boolean): PiEntry[] {
   const entries: PiEntry[] = [];
   readJsonl<PiEntry>(filePath, (entry) => {
     if (entry.type === "session") return;
@@ -229,6 +232,10 @@ function effectiveActivePath(filePath: string): PiEntry[] {
         ? byId.get(current.parentId)
         : undefined;
   }
+
+  // `full` preserves the entire active branch, including everything before the
+  // last compaction (which the default path would drop).
+  if (full) return activePath;
 
   const compactionIdx = findLastIndex(
     activePath,

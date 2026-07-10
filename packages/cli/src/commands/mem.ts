@@ -70,6 +70,7 @@ const VALID_PLATFORMS: readonly string[] = [
   "codex",
   "opencode",
   "pi",
+  "kiro",
   "all",
 ];
 
@@ -314,6 +315,7 @@ function cmdContext(argv: Argv): void {
     6000,
   );
   const includeChildren = argv.flags["include-children"] === true;
+  const full = argv.flags.full === true;
 
   let result;
   try {
@@ -325,6 +327,7 @@ function cmdContext(argv: Argv): void {
       around,
       maxChars,
       includeChildren,
+      full,
     });
   } catch (error) {
     if (error instanceof MemSessionNotFoundError)
@@ -403,10 +406,11 @@ function cmdExtract(argv: Argv): void {
   const phase = parsePhaseFlag(argv.flags.phase);
   const grepRaw = argv.flags.grep;
   const grep = typeof grepRaw === "string" ? grepRaw.toLowerCase() : undefined;
+  const full = argv.flags.full === true;
 
   let result;
   try {
-    result = extractMemDialogue({ sessionId: id, filter: f, phase, grep });
+    result = extractMemDialogue({ sessionId: id, filter: f, phase, grep, full });
   } catch (error) {
     if (error instanceof MemSessionNotFoundError)
       die(`session not found: ${id}`);
@@ -467,7 +471,7 @@ commands:
                                 use this to discover which --cwd to pass to search
 
 flags:
-  --platform claude|codex|opencode|pi|all   default all
+  --platform claude|codex|opencode|pi|kiro|all   default all
   --since YYYY-MM-DD                     inclusive lower bound
   --until YYYY-MM-DD                     inclusive upper bound
   --global                               include all projects (default: cwd-scoped)
@@ -477,6 +481,9 @@ flags:
   --phase brainstorm|implement|all       extract: slice by Trellis brainstorm windows
                                          (default all; brainstorm = [task.py create, task.py start);
                                          Claude/Codex/Pi supported; OpenCode warns + returns all)
+  --full                                 extract / context: preserve pre-compaction history
+                                         (long sessions compact repeatedly; default keeps only
+                                         the last compaction state)
   --turns N                              context: number of hit turns to return (default 3)
   --around N                             context: turns of surrounding context per hit (default 1)
   --max-chars N                          context: total char budget (default 6000, ~1500 tokens)
