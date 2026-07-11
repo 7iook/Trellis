@@ -15,6 +15,7 @@
  * Run `trellis mem help` for the full flag reference.
  */
 
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -157,6 +158,43 @@ export function shortPath(p?: string): string {
   return p.replace(HOME, "~");
 }
 
+// ---------- JSON output SSOT ----------
+//
+// Every `--json` subcommand funnels through `emitJsonOutput`. Motivation:
+// on Windows PowerShell 5.x the default `>` stdout redirection writes
+// UTF-16 LE + BOM, which breaks downstream `JSON.parse`. `--out <path>`
+// lets the CLI write UTF-8 (no BOM) itself, giving AI agents a one-shot
+// reliable path on any host shell. `--out` implies `--json` (a caller who
+// asked to serialize to a file is by definition asking for machine-readable
+// output). Do NOT inline `console.log(JSON.stringify(...))` in a command
+// handler — always go through this helper (SSOT).
+
+function shouldEmitJson(argv: Argv): boolean {
+  return argv.flags.json === true || typeof argv.flags.out === "string";
+}
+
+function emitJsonOutput(argv: Argv, payload: unknown): void {
+  const json = JSON.stringify(payload, null, 2);
+  const outRaw = argv.flags.out;
+  if (typeof outRaw === "string" && outRaw.length > 0) {
+    const outPath = path.resolve(outRaw);
+    // Auto-create parent directory tree — matches AI-agent expectations of
+    // "pass a fresh path, it just works". No-op if it already exists.
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    // Explicit UTF-8, no BOM. Buffer.byteLength for accurate byte count
+    // (JSON string length ≠ byte size when it contains non-ASCII).
+    fs.writeFileSync(outPath, json, { encoding: "utf8" });
+    const bytes = Buffer.byteLength(json, "utf8");
+    // Notice goes to stderr (via console.error, matching die() and the
+    // extract-warnings loop) so `--out` never pollutes stdout, which a
+    // caller may still capture. `console.error` auto-appends a newline.
+    console.error(`wrote ${bytes} bytes to ${outPath}`);
+    return;
+  }
+  // stdout path (existing behavior preserved for --json alone)
+  console.log(json);
+}
+
 function printSessions(rows: readonly MemSessionInfo[]): void {
   if (rows.length === 0) {
     console.log("(no sessions)");
@@ -181,8 +219,8 @@ function cmdList(argv: Argv): void {
   const f = buildFilter(argv.flags);
   maybeWarnOpencode(f);
   const rows = listMemSessions({ filter: f });
-  if (argv.flags.json) {
-    console.log(JSON.stringify(rows, null, 2));
+  if (shouldEmitJson(argv)) {
+    emitJsonOutput(argv, rows);
     return;
   }
   console.log(
@@ -207,22 +245,19 @@ function cmdSearch(argv: Argv): void {
   });
   const top = result.matches;
 
-  if (argv.flags.json) {
-    console.log(
-      JSON.stringify(
-        top.map((m) => ({
-          session: m.session,
-          score: Number(m.score.toFixed(4)),
-          hit_count: m.hit.count,
-          user_count: m.hit.userCount,
-          asst_count: m.hit.asstCount,
-          total_turns: m.hit.totalTurns,
-          descendants_merged: includeChildren ? m.descendantsMerged : 0,
-          excerpts: m.hit.excerpts,
-        })),
-        null,
-        2,
-      ),
+  if (shouldEmitJson(argv)) {
+    emitJsonOutput(
+      argv,
+      top.map((m) => ({
+        session: m.session,
+        score: Number(m.score.toFixed(4)),
+        hit_count: m.hit.count,
+        user_count: m.hit.userCount,
+        asst_count: m.hit.asstCount,
+        total_turns: m.hit.totalTurns,
+        descendants_merged: includeChildren ? m.descendantsMerged : 0,
+        excerpts: m.hit.excerpts,
+      })),
     );
     return;
   }
@@ -266,8 +301,8 @@ function cmdProjects(argv: Argv): void {
   const limit = parseOptionalNumberFlag(argv.flags.limit, "--limit", 30);
   const top = rows.slice(0, limit);
 
-  if (argv.flags.json) {
-    console.log(JSON.stringify(top, null, 2));
+  if (shouldEmitJson(argv)) {
+    emitJsonOutput(argv, top);
     return;
   }
   console.log(
@@ -336,26 +371,20 @@ function cmdContext(argv: Argv): void {
   }
   const s = result.session;
 
-  if (argv.flags.json) {
-    console.log(
-      JSON.stringify(
-        {
-          session: s,
-          query: result.query,
-          total_turns: result.totalTurns,
-          total_hit_turns: result.totalHitTurns,
-          merged_children: result.mergedChildren,
-          turns: result.turns.map((t) => ({
-            idx: t.idx,
-            role: t.role,
-            text: t.text,
-            is_hit: t.isHit,
-          })),
-        },
-        null,
-        2,
-      ),
-    );
+  if (shouldEmitJson(argv)) {
+    emitJsonOutput(argv, {
+      session: s,
+      query: result.query,
+      total_turns: result.totalTurns,
+      total_hit_turns: result.totalHitTurns,
+      merged_children: result.mergedChildren,
+      turns: result.turns.map((t) => ({
+        idx: t.idx,
+        role: t.role,
+        text: t.text,
+        is_hit: t.isHit,
+      })),
+    });
     return;
   }
 
@@ -410,7 +439,13 @@ function cmdExtract(argv: Argv): void {
 
   let result;
   try {
-    result = extractMemDialogue({ sessionId: id, filter: f, phase, grep, full });
+    result = extractMemDialogue({
+      sessionId: id,
+      filter: f,
+      phase,
+      grep,
+      full,
+    });
   } catch (error) {
     if (error instanceof MemSessionNotFoundError)
       die(`session not found: ${id}`);
@@ -420,21 +455,15 @@ function cmdExtract(argv: Argv): void {
   for (const w of result.warnings) console.error(`warning: ${w.message}`);
 
   const s = result.session;
-  if (argv.flags.json) {
-    console.log(
-      JSON.stringify(
-        {
-          session: s,
-          phase: result.phase,
-          windows: result.windows,
-          total_turns: result.totalTurns,
-          groups: result.groups,
-          turns: result.turns,
-        },
-        null,
-        2,
-      ),
-    );
+  if (shouldEmitJson(argv)) {
+    emitJsonOutput(argv, {
+      session: s,
+      phase: result.phase,
+      windows: result.windows,
+      total_turns: result.totalTurns,
+      groups: result.groups,
+      turns: result.turns,
+    });
     return;
   }
 
@@ -488,7 +517,11 @@ flags:
   --around N                             context: turns of surrounding context per hit (default 1)
   --max-chars N                          context: total char budget (default 6000, ~1500 tokens)
   --include-children                     search / context: merge OpenCode sub-agent sessions into parent
-  --json                                 emit JSON
+  --json                                 emit JSON to stdout
+  --out <path>                           write JSON to <path> (UTF-8, no BOM); implies --json.
+                                         Creates parent dirs. Notice goes to stderr;
+                                         stdout stays empty. Use this on Windows PowerShell
+                                         to avoid the UTF-16 BOM trap from '>' redirection.
   --help, -h                             show this help
 
 examples:

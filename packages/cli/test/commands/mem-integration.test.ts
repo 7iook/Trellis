@@ -662,4 +662,136 @@ describe("runMem subcommand integration", () => {
     expect(() => runMem(["bogus"])).toThrow(/__exit__:2/);
     expect(errs.join("\n")).toMatch(/unknown command/);
   });
+
+  // ---------- --out <file> (UTF-8, no BOM) ----------
+  //
+  // Motivation: Windows PowerShell 5.x default `>` redirection writes stdout
+  // as UTF-16 LE + BOM, breaking `JSON.parse` on the produced file. `--out`
+  // lets the CLI itself write UTF-8 (no BOM), giving AI agents a one-shot
+  // reliable path on any host shell.
+
+  it("extract --out: writes UTF-8 (no BOM) file, stdout stays empty", () => {
+    const outPath = nodePath.join(fakeHome, "extract-out.json");
+    runMem(["extract", sessionId, "--cwd", projectCwd, "--out", outPath]);
+    // stdout must be empty — payload went to file
+    expect(logs).toEqual([]);
+    // file exists
+    expect(nodeFs.existsSync(outPath)).toBe(true);
+    // first bytes must NOT be UTF-8 BOM (EF BB BF) or UTF-16 BOM (FF FE / FE FF)
+    const buf = nodeFs.readFileSync(outPath);
+    expect(buf[0]).not.toBe(0xef);
+    expect(buf[0]).not.toBe(0xff);
+    expect(buf[0]).not.toBe(0xfe);
+    // content parses as JSON with expected shape
+    const parsed = JSON.parse(buf.toString("utf8")) as {
+      session: { id: string };
+      turns: { role: string; text: string }[];
+    };
+    expect(parsed.session.id).toBe(sessionId);
+    expect(parsed.turns.length).toBeGreaterThan(0);
+    // stderr carries a "wrote N bytes to <path>" notice
+    expect(errs.join("\n")).toMatch(/wrote\s+\d+\s+bytes to/);
+  });
+
+  it("extract --out: implies --json even without explicit --json flag", () => {
+    const outPath = nodePath.join(fakeHome, "extract-implicit-json.json");
+    runMem(["extract", sessionId, "--cwd", projectCwd, "--out", outPath]);
+    // File must contain JSON, not markdown (## Human / ## Assistant)
+    const content = nodeFs.readFileSync(outPath, "utf8");
+    expect(() => JSON.parse(content)).not.toThrow();
+    expect(content).not.toContain("## Human");
+    expect(content).not.toContain("## Assistant");
+  });
+
+  it("extract --out + --json: same result as --out alone (no conflict)", () => {
+    const outPath = nodePath.join(fakeHome, "extract-both.json");
+    runMem([
+      "extract",
+      sessionId,
+      "--cwd",
+      projectCwd,
+      "--out",
+      outPath,
+      "--json",
+    ]);
+    expect(logs).toEqual([]);
+    expect(nodeFs.existsSync(outPath)).toBe(true);
+    const parsed = JSON.parse(nodeFs.readFileSync(outPath, "utf8")) as {
+      session: { id: string };
+    };
+    expect(parsed.session.id).toBe(sessionId);
+  });
+
+  it("extract --out: creates parent directories that don't exist", () => {
+    const outPath = nodePath.join(
+      fakeHome,
+      "nested",
+      "deep",
+      "path",
+      "out.json",
+    );
+    runMem(["extract", sessionId, "--cwd", projectCwd, "--out", outPath]);
+    expect(nodeFs.existsSync(outPath)).toBe(true);
+  });
+
+  it("list --out: writes JSON array to file (sweep coverage 1/4)", () => {
+    const outPath = nodePath.join(fakeHome, "list-out.json");
+    runMem(["list", "--cwd", projectCwd, "--out", outPath]);
+    expect(logs).toEqual([]);
+    const parsed = JSON.parse(nodeFs.readFileSync(outPath, "utf8")) as {
+      id: string;
+      platform: string;
+    }[];
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: sessionId, platform: "claude" }),
+      ]),
+    );
+  });
+
+  it("search --out: writes JSON matches to file (sweep coverage 2/4)", () => {
+    const outPath = nodePath.join(fakeHome, "search-out.json");
+    runMem(["search", "memory", "--cwd", projectCwd, "--out", outPath]);
+    expect(logs).toEqual([]);
+    const parsed = JSON.parse(nodeFs.readFileSync(outPath, "utf8")) as {
+      session: { id: string };
+      hit_count: number;
+    }[];
+    expect(parsed[0]?.session.id).toBe(sessionId);
+    expect(parsed[0]?.hit_count).toBeGreaterThan(0);
+  });
+
+  it("context --out: writes JSON context to file (sweep coverage 3/4)", () => {
+    const outPath = nodePath.join(fakeHome, "context-out.json");
+    runMem([
+      "context",
+      sessionId,
+      "--grep",
+      "memory",
+      "--cwd",
+      projectCwd,
+      "--out",
+      outPath,
+    ]);
+    expect(logs).toEqual([]);
+    const parsed = JSON.parse(nodeFs.readFileSync(outPath, "utf8")) as {
+      session: { id: string };
+      turns: unknown[];
+    };
+    expect(parsed.session.id).toBe(sessionId);
+    expect(Array.isArray(parsed.turns)).toBe(true);
+  });
+
+  it("projects --out: writes JSON project list to file (sweep coverage 4/4)", () => {
+    const outPath = nodePath.join(fakeHome, "projects-out.json");
+    runMem(["projects", "--out", outPath]);
+    expect(logs).toEqual([]);
+    const parsed = JSON.parse(nodeFs.readFileSync(outPath, "utf8")) as {
+      cwd: string;
+      sessions: number;
+    }[];
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed.find((p) => p.cwd === projectCwd)).toBeDefined();
+  });
 });

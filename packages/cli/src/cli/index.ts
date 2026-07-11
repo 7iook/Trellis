@@ -65,7 +65,20 @@ program
   .description(
     "AI-assisted development workflow framework for Cursor, Claude Code and more",
   )
-  .version(VERSION, "-v, --version", "output the version number");
+  .version(VERSION, "-v, --version", "output the version number")
+  // When an unknown subcommand is used (e.g. `mem` on a stale CLI), commander
+  // prints `error: unknown command 'X'`. Append a hint pointing at `trellis
+  // upgrade` so users with an older global install can self-resolve without
+  // digging into release notes. Using `showHelpAfterError(<string>)` replaces
+  // full-help spam with this focused hint.
+  .showHelpAfterError(
+    chalk.gray(
+      "\nSome subcommands (mem / workflow / channel / uninstall) were added\n" +
+        "in newer Trellis versions. If your CLI is behind, run: ",
+    ) +
+      chalk.cyan("trellis upgrade") +
+      "\n",
+  );
 
 program
   .command("init")

@@ -61,6 +61,27 @@ installed globally.
 | `--around N` | context | turns of context around each hit (default 1) |
 | `--max-chars N` | context | total char budget (default 6000, ~1500 tokens) |
 | `--json` | all | emit JSON instead of Markdown |
+| `--out <path>` | list/search/context/extract/projects | write JSON to `<path>` (UTF-8, no BOM); implies `--json`; parent dirs auto-created. **Prefer this over shell `>` redirection on Windows PowerShell** (see below). |
+
+### The `--out <path>` flag (Windows-safe file output)
+
+When you want the cleaned JSON on disk instead of stdout, prefer `--out
+<path>` over shell redirection:
+
+```bash
+trellis mem extract 019f2d88 --out ./out.json
+# implies --json; the CLI writes UTF-8 (no BOM) directly to the path,
+# stdout stays empty, and a `wrote N bytes to <path>` notice goes to stderr.
+```
+
+**Why (matters on Windows PowerShell 5.x):** PS's default `>` redirection
+writes stdout as **UTF-16 LE + BOM**, which breaks `JSON.parse` on the
+produced file (first bytes `FF FE`). `--out` sidesteps the host shell
+entirely and always emits UTF-8. Safe on macOS/Linux too.
+
+Parent directories under `<path>` are auto-created. Passing `--out`
+without `--json` still emits JSON (an AI agent asking to serialize to a
+file is by definition asking for machine-readable output).
 
 ### The `--full` flag (important for long sessions)
 
@@ -113,9 +134,14 @@ subcommands:
    ```bash
    trellis mem extract 019f2d88 --json
    ```
+   Or write directly to a file (recommended on Windows PowerShell to avoid
+   the UTF-16 BOM trap from `>`):
+   ```bash
+   trellis mem extract 019f2d88 --out ./session.json
+   ```
    Add `--full` if the session was compacted and you need everything:
    ```bash
-   trellis mem extract 019f2d88 --full --json
+   trellis mem extract 019f2d88 --full --out ./session.json
    ```
 
 You can pass an **id prefix** (e.g. `019f2d88`) — the tool resolves it to the
@@ -139,8 +165,11 @@ trellis mem extract c938d87d
 # extract as JSON for tooling
 trellis mem extract c938d87d --json
 
+# extract to a file (Windows-safe: UTF-8, no BOM, no `>` redirection needed)
+trellis mem extract c938d87d --out ./c938d87d.json
+
 # full history of a heavily-compacted session
-trellis mem extract 019f2d88 --full --json
+trellis mem extract 019f2d88 --full --out ./019f2d88.json
 ```
 
 ## JSON output shape (`extract --json`)
